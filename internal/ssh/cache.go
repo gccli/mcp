@@ -4,10 +4,18 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	cache "github.com/patrickmn/go-cache"
 	gossh "golang.org/x/crypto/ssh"
+)
+
+var (
+	dialTCP           = net.DialTimeout
+	authMethodBuilder = authMethodsForOptions
 )
 
 const (
@@ -50,6 +58,9 @@ func cacheKey(opts Options) string {
 	}
 	if opts.Password != "" {
 		return fmt.Sprintf("%s:%s:password:%s", opts.Host, username, opts.Password)
+	}
+	if opts.PrivateKey == "" {
+		return fmt.Sprintf("%s:%s:auto_private_key", opts.Host, username)
 	}
 	return fmt.Sprintf("%s:%s:private_key:%s", opts.Host, username, opts.PrivateKey)
 }
@@ -116,6 +127,11 @@ func connectSSH(opts Options) (*gossh.Client, error) {
 		username = DefaultUsername()
 	}
 
+	addr := fmt.Sprintf("%s:22", opts.Host)
+	if err := probeTCPReachability(addr, 30*time.Second); err != nil {
+		return nil, err
+	}
+
 	config := &gossh.ClientConfig{
 		User: username,
 		Auth: []gossh.AuthMethod{},
@@ -125,31 +141,123 @@ func connectSSH(opts Options) (*gossh.Client, error) {
 		Timeout: 30 * time.Second,
 	}
 
-	if opts.PrivateKey != "" {
-		key, err := os.ReadFile(opts.PrivateKey)
-		if err != nil {
-			return nil, fmt.Errorf("读取私钥文件失败: %w", err)
-		}
-		signer, err := gossh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("解析私钥失败: %w", err)
-		}
-		config.Auth = append(config.Auth, gossh.PublicKeys(signer))
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("获取用户目录失败: %w", err)
 	}
 
-	if opts.Password != "" {
-		config.Auth = append(config.Auth, gossh.Password(opts.Password))
+	authMethods, err := authMethodBuilder(opts, homeDir)
+	if err != nil {
+		return nil, err
 	}
+	config.Auth = append(config.Auth, authMethods...)
 
 	if len(config.Auth) == 0 {
 		return nil, fmt.Errorf("未提供任何认证方式")
 	}
 
-	addr := fmt.Sprintf("%s:22", opts.Host)
 	conn, err := gossh.Dial("tcp", addr, config)
 	if err != nil {
 		return nil, fmt.Errorf("连接 SSH 服务器失败: %w", err)
 	}
 
 	return conn, nil
+}
+
+func probeTCPReachability(addr string, timeout time.Duration) error {
+	conn, err := dialTCP("tcp", addr, timeout)
+	if err != nil {
+		return fmt.Errorf("TCP 连通性探测失败: %w", err)
+	}
+
+	if closeErr := conn.Close(); closeErr != nil {
+		return fmt.Errorf("关闭 TCP 探测连接失败: %w", closeErr)
+	}
+
+	return nil
+}
+
+func authMethodsForOptions(opts Options, homeDir string) ([]gossh.AuthMethod, error) {
+	authMethods := make([]gossh.AuthMethod, 0, 2)
+
+	if opts.PrivateKey != "" {
+		authMethod, err := publicKeyAuthMethod(opts.PrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		authMethods = append(authMethods, authMethod)
+	}
+
+	if opts.Password != "" {
+		authMethods = append(authMethods, gossh.Password(opts.Password))
+	}
+
+	if opts.PrivateKey == "" && opts.Password == "" {
+		fallbackKeys, err := discoverPrivateKeys(filepath.Join(homeDir, ".ssh"))
+		if err != nil {
+			return nil, err
+		}
+
+		parseErrors := make([]string, 0)
+		for _, keyPath := range fallbackKeys {
+			authMethod, keyErr := publicKeyAuthMethod(keyPath)
+			if keyErr != nil {
+				parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", filepath.Base(keyPath), keyErr))
+				continue
+			}
+			authMethods = append(authMethods, authMethod)
+		}
+
+		if len(authMethods) == 0 {
+			if len(parseErrors) > 0 {
+				return nil, fmt.Errorf("未找到可用的自动私钥认证方式: %s", strings.Join(parseErrors, "; "))
+			}
+			return nil, fmt.Errorf("未提供任何认证方式，且 ~/.ssh 下不存在权限为 0400 的私钥文件")
+		}
+	}
+
+	if len(authMethods) == 0 {
+		return nil, fmt.Errorf("未提供任何认证方式")
+	}
+
+	return authMethods, nil
+}
+
+func publicKeyAuthMethod(privateKeyPath string) (gossh.AuthMethod, error) {
+	key, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取私钥文件失败: %w", err)
+	}
+
+	signer, err := gossh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("解析私钥失败: %w", err)
+	}
+
+	return gossh.PublicKeys(signer), nil
+}
+
+func discoverPrivateKeys(sshDir string) ([]string, error) {
+	entries, err := os.ReadDir(sshDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取 ~/.ssh 目录失败: %w", err)
+	}
+
+	privateKeys := make([]string, 0)
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o400 {
+			continue
+		}
+		privateKeys = append(privateKeys, filepath.Join(sshDir, entry.Name()))
+	}
+
+	sort.Strings(privateKeys)
+	return privateKeys, nil
 }

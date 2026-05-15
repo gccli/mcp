@@ -15,9 +15,6 @@ func ValidateOptions(opts Options) error {
 	if opts.Host == "" {
 		return fmt.Errorf("host 参数不能为空")
 	}
-	if opts.Password == "" && opts.PrivateKey == "" {
-		return fmt.Errorf("必须提供 password 或 private_key 参数进行认证")
-	}
 	return nil
 }
 

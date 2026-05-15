@@ -50,8 +50,10 @@ npx @modelcontextprotocol/inspector ./mcp ssh
 
 在 Inspector 的 **Tools** 标签页中：
 - 可以看到 `exec` 和 `sudo_exec` 两个工具
-- 点击工具名称，填写参数（host、username、password/private_key、command）
+- 点击工具名称，填写参数（host、command 必填；username 可选，默认 root；password/private_key 可选）
 - 点击 **Run Tool** 执行，查看返回结果
+
+当 `password` 为空且未指定 `private_key` 时，服务会自动尝试 `~/.ssh/` 目录下权限为 `0400` 的私钥文件。
 
 ### 方式二：使用 Claude Desktop 集成测试
 
@@ -135,13 +137,13 @@ npx @modelcontextprotocol/inspector ./mcp ssh
     "name": "exec",
     "arguments": {
       "host": "192.168.1.100",
-      "username": "root",
-      "password": "your-password",
       "command": "uname -a"
     }
   }
 }
 ```
+
+如需显式指定认证方式，也可以继续传入 `username`、`password` 或 `private_key`。
 
 > **注意**：每条 JSON-RPC 消息必须以换行符（`\n`）分隔。stdio 模式下 Server 会持续从标准输入读取行，解析为 JSON-RPC 请求。
 

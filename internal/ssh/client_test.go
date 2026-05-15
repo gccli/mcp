@@ -121,7 +121,12 @@ func TestValidateOptions(t *testing.T) {
 		{
 			name:    "缺少认证方式",
 			opts:    Options{Host: "192.168.1.1", Username: "root"},
-			wantErr: true,
+			wantErr: false,
+		},
+		{
+			name:    "仅 host 也有效",
+			opts:    Options{Host: "192.168.1.1"},
+			wantErr: false,
 		},
 		{
 			name:    "密码认证有效",

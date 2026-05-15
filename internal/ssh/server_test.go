@@ -68,8 +68,15 @@ func TestExecToolParams(t *testing.T) {
 				Username: "root",
 				Command:  "ls -la",
 			},
-			wantErr: true,
-			errMsg:  "认证",
+			wantErr: false,
+		},
+		{
+			name: "仅 host 和 command",
+			params: execToolParams{
+				Host:    "192.168.1.1",
+				Command: "ls -la",
+			},
+			wantErr: false,
 		},
 	}
 

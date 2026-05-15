@@ -52,8 +52,8 @@ func (s *Server) Run(ctx context.Context, transport string) error {
 type execToolParams struct {
 	Host       string `json:"host"        jsonschema:"SSH 目标主机地址，必选"`
 	Username   string `json:"username"    jsonschema:"SSH 用户名，默认 root"`
-	Password   string `json:"password"    jsonschema:"SSH 密码认证，与 private_key 二选一"`
-	PrivateKey string `json:"private_key" jsonschema:"SSH 私钥文件路径，与 password 二选一"`
+	Password   string `json:"password"    jsonschema:"SSH 密码认证，可选"`
+	PrivateKey string `json:"private_key" jsonschema:"SSH 私钥文件路径，可选；未提供且 password 为空时自动尝试 ~/.ssh 下权限为 0400 的私钥"`
 	Command    string `json:"command"     jsonschema:"要执行的命令，必选"`
 }
 
@@ -71,9 +71,6 @@ func validateExecToolParams(params execToolParams) error {
 	}
 	if params.Command == "" {
 		return fmt.Errorf("command 参数不能为空")
-	}
-	if params.Password == "" && params.PrivateKey == "" {
-		return fmt.Errorf("必须提供 password 或 private_key 参数进行认证")
 	}
 	return nil
 }
