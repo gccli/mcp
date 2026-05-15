@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for this Go SSH MCP change."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Tests-first and verification expectations for backend changes."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Error propagation guidance for auth fallback failures."}
+

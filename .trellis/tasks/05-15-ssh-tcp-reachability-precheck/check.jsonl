@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend review context for the SSH connectivity sequencing change."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verification standards for backend tests and regressions."}
+{"file": ".trellis/spec/backend/ssh-mcp.md", "reason": "Review the SSH MCP error contract after adding TCP precheck."}
+
