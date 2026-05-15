@@ -43,7 +43,9 @@ func (c *Client) Exec(command string) (*ExecResult, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		// session 创建失败，可能连接已失效，清除缓存并重试
-		c.cache.cache.Delete(cacheKey(c.opts))
+		if key, keyErr := c.cache.resolveCacheKey(c.opts); keyErr == nil {
+			c.cache.cache.Delete(key)
+		}
 		client, err = c.cache.GetOrCreate(c.opts)
 		if err != nil {
 			return nil, err

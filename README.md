@@ -55,6 +55,8 @@ npx @modelcontextprotocol/inspector ./mcp ssh
 
 当 `password` 为空且未指定 `private_key` 时，服务会自动尝试 `~/.ssh/` 目录下权限为 `0400` 的私钥文件。
 
+在 Linux/macOS 下，`host` 也可以是 `~/.ssh/config` 中定义的别名。服务会在连接前解析其中的 `HostName`、`User`、`Port` 和 `IdentityFile`；如果同时显式传入 `username` 或 `private_key`，则以显式参数为准。
+
 ### 方式二：使用 Claude Desktop 集成测试
 
 如果你使用 Claude Desktop，可以将 MCP Server 配置到 Claude Desktop 中进行实际测试。
@@ -144,6 +146,8 @@ npx @modelcontextprotocol/inspector ./mcp ssh
 ```
 
 如需显式指定认证方式，也可以继续传入 `username`、`password` 或 `private_key`。
+
+如果 `host` 使用的是 SSH config 别名，则底层会按该别名解析后的目标地址和端口建立连接。
 
 > **注意**：每条 JSON-RPC 消息必须以换行符（`\n`）分隔。stdio 模式下 Server 会持续从标准输入读取行，解析为 JSON-RPC 请求。
 

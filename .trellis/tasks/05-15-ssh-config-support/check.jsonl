@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend review context for SSH config support."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verification standards for backend code and tests."}
+{"file": ".trellis/spec/backend/ssh-mcp.md", "reason": "Review the SSH MCP contract after adding SSH config resolution."}
+

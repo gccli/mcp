@@ -5,17 +5,19 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
+	sshconfig "github.com/kevinburke/ssh_config"
 	cache "github.com/patrickmn/go-cache"
 	gossh "golang.org/x/crypto/ssh"
 )
 
 var (
 	dialTCP           = net.DialTimeout
-	authMethodBuilder = authMethodsForOptions
+	authMethodBuilder = authMethodsForResolvedOptions
 )
 
 const (
@@ -35,6 +37,29 @@ type cachedConnection struct {
 type ConnectionCache struct {
 	cache *cache.Cache
 	ttl   time.Duration
+}
+
+type resolvedConnectionOptions struct {
+	Host          string
+	Port          string
+	Address       string
+	Username      string
+	Password      string
+	PrivateKey    string
+	IdentityFiles []string
+}
+
+func (opts resolvedConnectionOptions) CacheKey() string {
+	if opts.Password != "" {
+		return fmt.Sprintf("%s:%s:password:%s", opts.Address, opts.Username, opts.Password)
+	}
+	if opts.PrivateKey != "" {
+		return fmt.Sprintf("%s:%s:private_key:%s", opts.Address, opts.Username, opts.PrivateKey)
+	}
+	if len(opts.IdentityFiles) > 0 {
+		return fmt.Sprintf("%s:%s:identity_files:%s", opts.Address, opts.Username, strings.Join(opts.IdentityFiles, ","))
+	}
+	return fmt.Sprintf("%s:%s:auto_private_key", opts.Address, opts.Username)
 }
 
 // NewConnectionCache 创建默认 TTL (90秒) 的连接缓存
@@ -85,7 +110,17 @@ func (c *ConnectionCache) Set(key string, conn *cachedConnection) {
 
 // GetOrCreate 获取缓存的连接，如果不存在则创建新连接
 func (c *ConnectionCache) GetOrCreate(opts Options) (*gossh.Client, error) {
-	key := cacheKey(opts)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("获取用户目录失败: %w", err)
+	}
+
+	resolvedOpts, err := resolveConnectionOptions(opts, homeDir)
+	if err != nil {
+		return nil, err
+	}
+
+	key := resolvedOpts.CacheKey()
 
 	// 尝试从缓存获取
 	cached, found := c.Get(key)
@@ -101,7 +136,7 @@ func (c *ConnectionCache) GetOrCreate(opts Options) (*gossh.Client, error) {
 	}
 
 	// 创建新连接
-	client, err := connectSSH(opts)
+	client, err := connectResolvedSSH(resolvedOpts, homeDir)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +150,20 @@ func (c *ConnectionCache) GetOrCreate(opts Options) (*gossh.Client, error) {
 	return client, nil
 }
 
+func (c *ConnectionCache) resolveCacheKey(opts Options) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("获取用户目录失败: %w", err)
+	}
+
+	resolvedOpts, err := resolveConnectionOptions(opts, homeDir)
+	if err != nil {
+		return "", err
+	}
+
+	return resolvedOpts.CacheKey(), nil
+}
+
 // ItemCount 返回缓存中的条目数
 func (c *ConnectionCache) ItemCount() int {
 	return c.cache.ItemCount()
@@ -122,28 +171,31 @@ func (c *ConnectionCache) ItemCount() int {
 
 // connectSSH 建立 SSH 连接
 func connectSSH(opts Options) (*gossh.Client, error) {
-	username := opts.Username
-	if username == "" {
-		username = DefaultUsername()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("获取用户目录失败: %w", err)
 	}
 
-	addr := fmt.Sprintf("%s:22", opts.Host)
-	if err := probeTCPReachability(addr, 30*time.Second); err != nil {
+	resolvedOpts, err := resolveConnectionOptions(opts, homeDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return connectResolvedSSH(resolvedOpts, homeDir)
+}
+
+func connectResolvedSSH(opts resolvedConnectionOptions, homeDir string) (*gossh.Client, error) {
+	if err := probeTCPReachability(opts.Address, 30*time.Second); err != nil {
 		return nil, err
 	}
 
 	config := &gossh.ClientConfig{
-		User: username,
+		User: opts.Username,
 		Auth: []gossh.AuthMethod{},
 		HostKeyCallback: func(hostname string, remote net.Addr, key gossh.PublicKey) error {
 			return nil
 		},
 		Timeout: 30 * time.Second,
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("获取用户目录失败: %w", err)
 	}
 
 	authMethods, err := authMethodBuilder(opts, homeDir)
@@ -156,7 +208,7 @@ func connectSSH(opts Options) (*gossh.Client, error) {
 		return nil, fmt.Errorf("未提供任何认证方式")
 	}
 
-	conn, err := gossh.Dial("tcp", addr, config)
+	conn, err := gossh.Dial("tcp", opts.Address, config)
 	if err != nil {
 		return nil, fmt.Errorf("连接 SSH 服务器失败: %w", err)
 	}
@@ -177,8 +229,9 @@ func probeTCPReachability(addr string, timeout time.Duration) error {
 	return nil
 }
 
-func authMethodsForOptions(opts Options, homeDir string) ([]gossh.AuthMethod, error) {
+func authMethodsForResolvedOptions(opts resolvedConnectionOptions, homeDir string) ([]gossh.AuthMethod, error) {
 	authMethods := make([]gossh.AuthMethod, 0, 2)
+	parseErrors := make([]string, 0)
 
 	if opts.PrivateKey != "" {
 		authMethod, err := publicKeyAuthMethod(opts.PrivateKey)
@@ -188,17 +241,25 @@ func authMethodsForOptions(opts Options, homeDir string) ([]gossh.AuthMethod, er
 		authMethods = append(authMethods, authMethod)
 	}
 
+	for _, keyPath := range opts.IdentityFiles {
+		authMethod, keyErr := publicKeyAuthMethod(keyPath)
+		if keyErr != nil {
+			parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", filepath.Base(keyPath), keyErr))
+			continue
+		}
+		authMethods = append(authMethods, authMethod)
+	}
+
 	if opts.Password != "" {
 		authMethods = append(authMethods, gossh.Password(opts.Password))
 	}
 
-	if opts.PrivateKey == "" && opts.Password == "" {
+	if opts.PrivateKey == "" && opts.Password == "" && len(authMethods) == 0 {
 		fallbackKeys, err := discoverPrivateKeys(filepath.Join(homeDir, ".ssh"))
 		if err != nil {
 			return nil, err
 		}
 
-		parseErrors := make([]string, 0)
 		for _, keyPath := range fallbackKeys {
 			authMethod, keyErr := publicKeyAuthMethod(keyPath)
 			if keyErr != nil {
@@ -221,6 +282,116 @@ func authMethodsForOptions(opts Options, homeDir string) ([]gossh.AuthMethod, er
 	}
 
 	return authMethods, nil
+}
+
+func authMethodsForOptions(opts Options, homeDir string) ([]gossh.AuthMethod, error) {
+	resolvedOpts, err := resolveConnectionOptions(opts, homeDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return authMethodsForResolvedOptions(resolvedOpts, homeDir)
+}
+
+func resolveConnectionOptions(opts Options, homeDir string) (resolvedConnectionOptions, error) {
+	resolved := resolvedConnectionOptions{
+		Host:       opts.Host,
+		Port:       "22",
+		Username:   opts.Username,
+		Password:   opts.Password,
+		PrivateKey: opts.PrivateKey,
+	}
+
+	config, err := decodeSSHConfig(filepath.Join(homeDir, ".ssh", "config"))
+	if err != nil {
+		return resolvedConnectionOptions{}, err
+	}
+
+	if config != nil {
+		if hostName, getErr := config.Get(opts.Host, "HostName"); getErr == nil && hostName != "" {
+			resolved.Host = hostName
+		}
+		if resolved.Username == "" {
+			if user, getErr := config.Get(opts.Host, "User"); getErr == nil && user != "" {
+				resolved.Username = user
+			}
+		}
+		if port, getErr := config.Get(opts.Host, "Port"); getErr == nil && port != "" {
+			resolved.Port = port
+		}
+		if resolved.PrivateKey == "" {
+			identityFiles, getErr := sshConfigValues(config, opts.Host, "IdentityFile")
+			if getErr != nil {
+				return resolvedConnectionOptions{}, fmt.Errorf("读取 SSH config 的 IdentityFile 失败: %w", getErr)
+			}
+			resolved.IdentityFiles = expandSSHPaths(identityFiles, homeDir)
+		}
+	}
+
+	if resolved.Username == "" {
+		resolved.Username = DefaultUsername()
+	}
+	resolved.Address = net.JoinHostPort(resolved.Host, resolved.Port)
+
+	return resolved, nil
+}
+
+func decodeSSHConfig(configPath string) (*sshconfig.Config, error) {
+	configFile, err := os.Open(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取 SSH config 失败: %w", err)
+	}
+	defer configFile.Close()
+
+	config, err := sshconfig.Decode(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("解析 SSH config 失败: %w", err)
+	}
+	return config, nil
+}
+
+func sshConfigValues(config *sshconfig.Config, alias string, key string) ([]string, error) {
+	method := reflect.ValueOf(config).MethodByName("GetAll")
+	if method.IsValid() {
+		results := method.Call([]reflect.Value{reflect.ValueOf(alias), reflect.ValueOf(key)})
+		if len(results) == 2 && !results[1].IsNil() {
+			if err, ok := results[1].Interface().(error); ok {
+				return nil, err
+			}
+		}
+		if len(results) > 0 {
+			if values, ok := results[0].Interface().([]string); ok {
+				return values, nil
+			}
+		}
+	}
+
+	value, err := config.Get(alias, key)
+	if err != nil {
+		return nil, err
+	}
+	if value == "" {
+		return nil, nil
+	}
+	return []string{value}, nil
+}
+
+func expandSSHPaths(paths []string, homeDir string) []string {
+	expanded := make([]string, 0, len(paths))
+	for _, path := range paths {
+		switch {
+		case path == "~":
+			expanded = append(expanded, homeDir)
+		case strings.HasPrefix(path, "~/"):
+			expanded = append(expanded, filepath.Join(homeDir, path[2:]))
+		default:
+			expanded = append(expanded, path)
+		}
+	}
+	return expanded
 }
 
 func publicKeyAuthMethod(privateKeyPath string) (gossh.AuthMethod, error) {

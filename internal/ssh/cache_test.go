@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -248,7 +249,7 @@ func TestConnectSSHChecksTCPReachabilityBeforeAuth(t *testing.T) {
 	dialTCP = func(network, address string, timeout time.Duration) (net.Conn, error) {
 		return nil, errors.New("network unreachable")
 	}
-	authMethodBuilder = func(opts Options, homeDir string) ([]gossh.AuthMethod, error) {
+	authMethodBuilder = func(opts resolvedConnectionOptions, homeDir string) ([]gossh.AuthMethod, error) {
 		authMethodCalled++
 		return nil, nil
 	}
@@ -262,6 +263,102 @@ func TestConnectSSHChecksTCPReachabilityBeforeAuth(t *testing.T) {
 	}
 	if authMethodCalled != 0 {
 		t.Fatalf("期望 TCP 探测失败后不进入认证构建，但调用了 %d 次", authMethodCalled)
+	}
+}
+
+func TestResolveConnectionOptionsAppliesSSHConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	sshDir := filepath.Join(tempDir, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatalf("创建 .ssh 目录失败: %v", err)
+	}
+
+	configContent := strings.Join([]string{
+		"Host prod",
+		"  HostName 10.0.0.8",
+		"  User ubuntu",
+		"  Port 2222",
+		"  IdentityFile ~/.ssh/prod_ed25519",
+		"  IdentityFile ~/.ssh/prod_rsa",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(configContent), 0o600); err != nil {
+		t.Fatalf("写入 SSH config 失败: %v", err)
+	}
+
+	resolved, err := resolveConnectionOptions(Options{Host: "prod"}, tempDir)
+	if err != nil {
+		t.Fatalf("resolveConnectionOptions() 返回错误: %v", err)
+	}
+	if resolved.Address != "10.0.0.8:2222" {
+		t.Fatalf("Address = %q, want %q", resolved.Address, "10.0.0.8:2222")
+	}
+	if resolved.Username != "ubuntu" {
+		t.Fatalf("Username = %q, want %q", resolved.Username, "ubuntu")
+	}
+	if resolved.Host != "10.0.0.8" {
+		t.Fatalf("Host = %q, want %q", resolved.Host, "10.0.0.8")
+	}
+	if resolved.Port != "2222" {
+		t.Fatalf("Port = %q, want %q", resolved.Port, "2222")
+	}
+	expectedIdentityFiles := []string{
+		filepath.Join(sshDir, "prod_ed25519"),
+		filepath.Join(sshDir, "prod_rsa"),
+	}
+	if !reflect.DeepEqual(resolved.IdentityFiles, expectedIdentityFiles) {
+		t.Fatalf("IdentityFiles = %v, want %v", resolved.IdentityFiles, expectedIdentityFiles)
+	}
+	if resolved.PrivateKey != "" {
+		t.Fatalf("PrivateKey = %q, want empty", resolved.PrivateKey)
+	}
+}
+
+func TestResolveConnectionOptionsExplicitValuesOverrideSSHConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	sshDir := filepath.Join(tempDir, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatalf("创建 .ssh 目录失败: %v", err)
+	}
+
+	configContent := strings.Join([]string{
+		"Host prod",
+		"  HostName 10.0.0.8",
+		"  User ubuntu",
+		"  Port 2222",
+		"  IdentityFile ~/.ssh/prod_ed25519",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(configContent), 0o600); err != nil {
+		t.Fatalf("写入 SSH config 失败: %v", err)
+	}
+
+	resolved, err := resolveConnectionOptions(Options{
+		Host:       "prod",
+		Username:   "root",
+		PrivateKey: "/manual/key",
+		Password:   "secret",
+	}, tempDir)
+	if err != nil {
+		t.Fatalf("resolveConnectionOptions() 返回错误: %v", err)
+	}
+	if resolved.Address != "10.0.0.8:2222" {
+		t.Fatalf("Address = %q, want %q", resolved.Address, "10.0.0.8:2222")
+	}
+	if resolved.Username != "root" {
+		t.Fatalf("Username = %q, want %q", resolved.Username, "root")
+	}
+	if resolved.PrivateKey != "/manual/key" {
+		t.Fatalf("PrivateKey = %q, want %q", resolved.PrivateKey, "/manual/key")
+	}
+	if resolved.Password != "secret" {
+		t.Fatalf("Password = %q, want %q", resolved.Password, "secret")
+	}
+	if len(resolved.IdentityFiles) != 0 {
+		t.Fatalf("IdentityFiles = %v, want empty", resolved.IdentityFiles)
+	}
+	if resolved.CacheKey() != "10.0.0.8:2222:root:password:secret" {
+		t.Fatalf("CacheKey() = %q, want %q", resolved.CacheKey(), "10.0.0.8:2222:root:password:secret")
 	}
 }
 
