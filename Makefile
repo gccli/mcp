@@ -1,7 +1,7 @@
 .PHONY: all build clean test fmt vet lint run-ssh help
 
 BINARY_NAME := mcp
-BUILD_DIR := .
+BUILD_DIR := /usr/local/bin
 GO := go
 GOFLAGS := -v
 
