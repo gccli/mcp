@@ -134,7 +134,7 @@ spec:
     - name: web
       protocol: HTTP
       port: 80
-      hostname: jenkins.0a3a9010.sslip.io
+      hostname: jenkins.0a3a9012.sslip.io
       allowedRoutes:
         namespaces:
           from: Same
@@ -153,7 +153,6 @@ spec:
       sectionName: web
   hostnames:
     - jenkins.0a3a9012.sslip.io
-    - 10.58.144.18
   rules:
     - matches:
         - path:
