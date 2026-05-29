@@ -22,3 +22,5 @@ runners:
       [runners.kubernetes]
         image = "golang:1.26-bookworm"
         image_pull_secrets = ["docker-infra-secret"]
+        [runners.kubernetes.node_selector]
+          "jobs" = "ci"
